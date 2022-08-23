@@ -44,7 +44,7 @@ setup(
         "full": [
             "itsdangerous",
             "jinja2",
-            "python-multipart",
+            "baize",
             "pyyaml",
             "requests",
         ]

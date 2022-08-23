@@ -1,15 +1,11 @@
 import os
 import typing
-from contextlib import nullcontext as does_not_raise
 
 import pytest
 
-from starlette.applications import Starlette
-from starlette.formparsers import MultiPartException, UploadFile, _user_safe_decode
+from starlette.formparsers import UploadFile
 from starlette.requests import Request
 from starlette.responses import JSONResponse
-from starlette.routing import Mount
-from starlette.testclient import TestClient
 
 
 class ForceMultipartDict(dict):
@@ -24,7 +20,7 @@ FORCE_MULTIPART = ForceMultipartDict()
 async def app(scope, receive, send):
     request = Request(scope, receive)
     data = await request.form()
-    output: typing.Dict[str, typing.Any] = {}
+    output = {}
     for key, value in data.items():
         if isinstance(value, UploadFile):
             content = await value.read()
@@ -66,7 +62,7 @@ async def multi_items_app(scope, receive, send):
 async def app_with_headers(scope, receive, send):
     request = Request(scope, receive)
     data = await request.form()
-    output: typing.Dict[str, typing.Any] = {}
+    output = {}
     for key, value in data.items():
         if isinstance(value, UploadFile):
             content = await value.read()
@@ -384,29 +380,10 @@ def test_multipart_multi_field_app_reads_body(tmpdir, test_client_factory):
     assert response.json() == {"some": "data", "second": "key pair"}
 
 
-def test_user_safe_decode_helper():
-    result = _user_safe_decode(b"\xc4\x99\xc5\xbc\xc4\x87", "utf-8")
-    assert result == "ężć"
-
-
-def test_user_safe_decode_ignores_wrong_charset():
-    result = _user_safe_decode(b"abc", "latin-8")
-    assert result == "abc"
-
-
-@pytest.mark.parametrize(
-    "app,expectation",
-    [
-        (app, pytest.raises(MultiPartException)),
-        (Starlette(routes=[Mount("/", app=app)]), does_not_raise()),
-    ],
-)
-def test_missing_boundary_parameter(
-    app, expectation, test_client_factory: typing.Callable[..., TestClient]
-) -> None:
+def test_missing_boundary_parameter(test_client_factory):
     client = test_client_factory(app)
-    with expectation:
-        res = client.post(
+    with pytest.raises(KeyError, match="boundary"):
+        client.post(
             "/",
             data=(
                 # file
@@ -416,37 +393,32 @@ def test_missing_boundary_parameter(
             ),
             headers={"Content-Type": "multipart/form-data; charset=utf-8"},
         )
-        assert res.status_code == 400
-        assert res.text == "Missing boundary in multipart."
 
 
-@pytest.mark.parametrize(
-    "app,expectation",
-    [
-        (app, pytest.raises(MultiPartException)),
-        (Starlette(routes=[Mount("/", app=app)]), does_not_raise()),
-    ],
-)
-def test_missing_name_parameter_on_content_disposition(
-    app, expectation, test_client_factory: typing.Callable[..., TestClient]
-):
+def test_postman_multipart_form_data(test_client_factory):
+    postman_body = b'----------------------------850116600781883365617864\r\nContent-Disposition: form-data; name="attributes"; filename="test-attribute_5.tsv"\r\nContent-Type: text/tab-separated-values\r\n\r\n"Campaign ID"\t"Plate Set ID"\t"No"\n\r\n----------------------------850116600781883365617864\r\nContent-Disposition: form-data; name="fasta"; filename="test-sequence_correct_5.fasta"\r\nContent-Type: application/octet-stream\r\n\r\n>P23G01_IgG1-1411:H:Q10C3:1/1:NID18\r\nCAGGTATTGAA\r\n\r\n----------------------------850116600781883365617864--\r\n'  # noqa: E501
+    postman_headers = {
+        "content-type": "multipart/form-data; boundary=--------------------------850116600781883365617864",  # noqa: E501
+        "user-agent": "PostmanRuntime/7.26.0",
+        "accept": "*/*",
+        "cache-control": "no-cache",
+        "host": "10.0.5.13:80",
+        "accept-encoding": "gzip, deflate, br",
+        "connection": "keep-alive",
+        "content-length": "2455",
+    }
+
     client = test_client_factory(app)
-    with expectation:
-        res = client.post(
-            "/",
-            data=(
-                # data
-                b"--a7f7ac8d4e2e437c877bb7b8d7cc549c\r\n"
-                b'Content-Disposition: form-data; ="field0"\r\n\r\n'
-                b"value0\r\n"
-            ),
-            headers={
-                "Content-Type": (
-                    "multipart/form-data; boundary=a7f7ac8d4e2e437c877bb7b8d7cc549c"
-                )
-            },
-        )
-        assert res.status_code == 400
-        assert (
-            res.text == 'The Content-Disposition header field "name" must be provided.'
-        )
+    response = client.post("/", data=postman_body, headers=postman_headers)
+    assert response.json() == {
+        "attributes": {
+            "filename": "test-attribute_5.tsv",
+            "content": '"Campaign ID"\t"Plate Set ID"\t"No"\n',
+            "content_type": "text/tab-separated-values",
+        },
+        "fasta": {
+            "filename": "test-sequence_correct_5.fasta",
+            "content": ">P23G01_IgG1-1411:H:Q10C3:1/1:NID18\r\nCAGGTATTGAA\r\n",
+            "content_type": "application/octet-stream",
+        },
+    }

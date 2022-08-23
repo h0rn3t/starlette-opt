@@ -1,19 +1,15 @@
 import json
 import typing
+from cgi import parse_header
+from collections.abc import Mapping
 from http import cookies as http_cookies
+from urllib.parse import parse_qsl
 
 import anyio
 
 from starlette.datastructures import URL, Address, FormData, Headers, QueryParams, State
-from starlette.exceptions import HTTPException
-from starlette.formparsers import FormParser, MultiPartException, MultiPartParser
+from starlette.formparsers import MultiPartParser
 from starlette.types import Message, Receive, Scope, Send
-
-try:
-    from multipart.multipart import parse_options_header
-except ImportError:  # pragma: nocover
-    parse_options_header = None
-
 
 if typing.TYPE_CHECKING:
     from starlette.routing import Router
@@ -59,13 +55,13 @@ class ClientDisconnect(Exception):
     pass
 
 
-class HTTPConnection(typing.Mapping[str, typing.Any]):
+class HTTPConnection(Mapping):
     """
     A base class for incoming HTTP connections, that is used to provide
     any functionality that is common to both `Request` and `WebSocket`.
     """
 
-    def __init__(self, scope: Scope, receive: typing.Optional[Receive] = None) -> None:
+    def __init__(self, scope: Scope, receive: Receive = None) -> None:
         assert scope["type"] in ("http", "websocket")
         self.scope = scope
 
@@ -142,23 +138,23 @@ class HTTPConnection(typing.Mapping[str, typing.Any]):
         return None
 
     @property
-    def session(self) -> typing.Dict[str, typing.Any]:
+    def session(self) -> dict:
         assert (
-            "session" in self.scope
+                "session" in self.scope
         ), "SessionMiddleware must be installed to access request.session"
         return self.scope["session"]
 
     @property
     def auth(self) -> typing.Any:
         assert (
-            "auth" in self.scope
+                "auth" in self.scope
         ), "AuthenticationMiddleware must be installed to access request.auth"
         return self.scope["auth"]
 
     @property
     def user(self) -> typing.Any:
         assert (
-            "user" in self.scope
+                "user" in self.scope
         ), "AuthenticationMiddleware must be installed to access request.user"
         return self.scope["user"]
 
@@ -188,7 +184,7 @@ async def empty_send(message: Message) -> typing.NoReturn:
 
 class Request(HTTPConnection):
     def __init__(
-        self, scope: Scope, receive: Receive = empty_receive, send: Send = empty_send
+            self, scope: Scope, receive: Receive = empty_receive, send: Send = empty_send
     ):
         super().__init__(scope)
         assert scope["type"] == "http"
@@ -230,7 +226,7 @@ class Request(HTTPConnection):
 
     async def body(self) -> bytes:
         if not hasattr(self, "_body"):
-            chunks: "typing.List[bytes]" = []
+            chunks = []
             async for chunk in self.stream():
                 chunks.append(chunk)
             self._body = b"".join(chunks)
@@ -244,23 +240,19 @@ class Request(HTTPConnection):
 
     async def form(self) -> FormData:
         if not hasattr(self, "_form"):
-            assert (
-                parse_options_header is not None
-            ), "The `python-multipart` library must be installed to use form parsing."
-            content_type_header = self.headers.get("Content-Type")
-            content_type: bytes
-            content_type, _ = parse_options_header(content_type_header)
-            if content_type == b"multipart/form-data":
-                try:
-                    multipart_parser = MultiPartParser(self.headers, self.stream())
-                    self._form = await multipart_parser.parse()
-                except MultiPartException as exc:
-                    if "app" in self.scope:
-                        raise HTTPException(status_code=400, detail=exc.message)
-                    raise exc
-            elif content_type == b"application/x-www-form-urlencoded":
-                form_parser = FormParser(self.headers, self.stream())
-                self._form = await form_parser.parse()
+            content_type_header = self.headers.get("Content-Type", "")
+            content_type, options = parse_header(content_type_header)
+            if content_type == "multipart/form-data":
+                multipart_parser = MultiPartParser(self.headers, self.stream())
+                self._form = await multipart_parser.parse()
+            elif content_type == "application/x-www-form-urlencoded":
+                self._form = FormData(
+                    parse_qsl(
+                        b"".join([chunk async for chunk in self.stream()]).decode(
+                            options.get("charset", "latin-1")
+                        )
+                    )
+                )
             else:
                 self._form = FormData()
         return self._form
@@ -285,7 +277,7 @@ class Request(HTTPConnection):
 
     async def send_push_promise(self, path: str) -> None:
         if "http.response.push" in self.scope.get("extensions", {}):
-            raw_headers: "typing.List[typing.Tuple[bytes, bytes]]" = []
+            raw_headers = []
             for name in SERVER_PUSH_HEADERS_TO_COPY:
                 for value in self.headers.getlist(name):
                     raw_headers.append(
